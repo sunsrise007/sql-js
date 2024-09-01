@@ -1,0 +1,252 @@
+const express = require('express');
+const cors = require('cors');
+const { Connection, Request, TYPES } = require('tedious');
+
+// MSSQL bağlantı ayarları
+const config = {
+  server: 'localhost\\SQLEXPRESS',
+  authentication: {
+    type: 'default',
+    options: {
+      userName: 'sa',
+      password: '664Gmm//*/'
+    }
+  },
+  options: {
+    encrypt: true,
+    trustServerCertificate: true,
+    database: 'data'
+  }
+};
+
+// Express uygulaması oluştur
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+let connection = null;
+
+// Ana sayfa rotası
+app.get('/', (req, res) => {
+  res.send('Server is running. Use /api/data to interact with the API.');
+});
+
+// API endpoint: Veritabanından veri al
+app.get('/api/data', (req, res) => {
+  if (!connection) {
+    connection = new Connection(config);
+
+    connection.on('connect', (err) => {
+      if (err) {
+        console.error('Connection Failed:', err.message);
+        res.status(500).send('Database connection failed');
+      } else {
+        console.log('Connected');
+        executeSelectStatement(res);
+      }
+    });
+
+    connection.connect();
+  } else {
+    executeSelectStatement(res);
+  }
+});
+
+function executeSelectStatement(res) {
+  if (!connection) {
+    console.error('No database connection');
+    return res.status(500).send('No database connection');
+  }
+
+  const request = new Request('SELECT * FROM base;', (err, rowCount) => {
+    if (err) {
+      console.error('Query Error:', err.message);
+      res.status(500).send('Query failed');
+    } else {
+      console.log(rowCount + ' row(s) returned');
+    }
+  });
+
+  const result = [];
+  request.on('row', (columns) => {
+    const row = {};
+    columns.forEach((column) => {
+      row[column.metadata.colName] = column.value;
+    });
+    result.push(row);
+  });
+
+  request.on('requestCompleted', () => {
+    res.json(result);
+  });
+
+  connection.execSql(request);
+}
+
+// API endpoint: Veritabanına veri ekle
+app.post('/api/data', (req, res) => {
+  const newData = req.body.col1;
+  
+  if (!newData) {
+    console.error('No data to insert');
+    return res.status(400).send('No data to insert');
+  }
+
+  const insertRequest = new Request(
+    'INSERT INTO base (col1) VALUES (@col1);',
+    (err) => {
+      if (err) {
+        console.error('Insert Error:', err.message);
+        res.status(500).send('Error inserting data');
+      } else {
+        console.log('Insert successful');
+        res.send({ success: true });
+      }
+    }
+  );
+
+  insertRequest.addParameter('col1', TYPES.VarChar, newData);
+  connection.execSql(insertRequest);
+});
+
+// API endpoint: Veritabanından veri sil
+app.delete('/api/data/:id', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+
+  if (isNaN(id)) {
+    console.error('Invalid ID');
+    return res.status(400).send('Invalid ID');
+  }
+
+  const deleteRequest = new Request(
+    'DELETE FROM base WHERE id = @id;',
+    (err) => {
+      if (err) {
+        console.error('Delete Error:', err.message);
+        res.status(500).send('Error deleting data');
+      } else {
+        console.log('Delete successful');
+        res.send({ success: true });
+      }
+    }
+  );
+
+  deleteRequest.addParameter('id', TYPES.Int, id);
+  connection.execSql(deleteRequest);
+});
+
+// API endpoint: Veritabanını sıfırla
+app.post('/api/reset', (req, res) => {
+  if (!connection) {
+    connection = new Connection(config);
+
+    connection.on('connect', (err) => {
+      if (err) {
+        console.error('Connection Failed:', err.message);
+        res.status(500).send('Database connection failed');
+      } else {
+        console.log('Connected');
+        resetDatabase(res);
+      }
+    });
+
+    connection.connect();
+  } else {
+    resetDatabase(res);
+  }
+});
+
+function resetDatabase(res) {
+  if (!connection) {
+    console.error('No database connection');
+    return res.status(500).send('No database connection');
+  }
+
+  const resetRequest = new Request(
+    `DELETE FROM base;
+     DBCC CHECKIDENT ('base', RESEED, 0);`,
+    (err) => {
+      if (err) {
+        console.error('Reset Error:', err.message);
+        res.status(500).send('Error resetting database');
+      } else {
+        console.log('Database reset successful');
+        res.send({ success: true });
+      }
+    }
+  );
+
+  connection.execSql(resetRequest);
+}
+
+// API endpoint: Veritabanını güncelle
+app.put('/api/data/:id', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const newData = req.body.col1;
+
+  if (isNaN(id) || !newData) {
+    console.error('Invalid ID or data');
+    return res.status(400).send('Invalid ID or data');
+  }
+
+  const updateRequest = new Request(
+    'UPDATE base SET col1 = @col1 WHERE id = @id;',
+    (err) => {
+      if (err) {
+        console.error('Update Error:', err.message);
+        res.status(500).send('Error updating data');
+      } else {
+        console.log('Update successful');
+        res.send({ success: true });
+      }
+    }
+  );
+
+  updateRequest.addParameter('id', TYPES.Int, id);
+  updateRequest.addParameter('col1', TYPES.VarChar, newData);
+  connection.execSql(updateRequest);
+});
+
+// API endpoint: Arama yap
+app.post('/api/search', (req, res) => {
+  const query = req.body.query;
+
+  if (!query) {
+    console.error('No query provided');
+    return res.status(400).send('No query provided');
+  }
+
+  const searchRequest = new Request(
+    `SELECT * FROM base WHERE col1 LIKE @query;`,
+    (err) => {
+      if (err) {
+        console.error('Search Error:', err.message);
+        res.status(500).send('Error searching data');
+      }
+    }
+  );
+
+  searchRequest.addParameter('query', TYPES.VarChar, `%${query}%`);
+
+  const result = [];
+  searchRequest.on('row', (columns) => {
+    const row = {};
+    columns.forEach((column) => {
+      row[column.metadata.colName] = column.value;
+    });
+    result.push(row);
+  });
+
+  searchRequest.on('requestCompleted', () => {
+    res.json({ result });
+  });
+
+  connection.execSql(searchRequest);
+});
+
+
+
+// Sunucuyu dinlemeye başla
+app.listen(3001, () => {
+  console.log('Server running on http://localhost:3001');
+});
